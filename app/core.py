@@ -43,6 +43,12 @@ source 所在分量接入失电分量任意节点，失电分量从接入点重�
 与节点电压按与 ``evaluate`` 相同的规则判定超额定与欠压（恰好触限允许）。可行性对
 已投运集合具有单调性，按输入序号递增做子集状态深度优先搜索并记忆不可行集合，首个
 完整顺序即按输入序号字典序最小者。
+
+``loss_allocation`` 按未舍入的基线线段电流计算逐线段线损 P=I²R 与总线损，并按
+``loads`` 输入序号逐负载归属：负载 i 在其到 source 路径的每段上承担
+该负载电流 × 该段总电流 × 该段电阻（同一线段上各下游负载的承担量之和恰为该段
+I²R，故全部负载归属之和等于总线损）；source 节点负载路径为空、归属为零，同节点
+多条负载分别列出。计算与汇总使用未舍入值，展示值按 6 位小数舍入。
 """
 
 from __future__ import annotations
@@ -345,6 +351,60 @@ def evaluate(source_voltage: float, min_voltage: float, segments_in: Sequence, l
         "nodes": node_results,
         "over_current_segments": over_current_segments,
         "under_voltage_nodes": under_voltage_nodes,
+    }
+
+
+def loss_allocation(source_voltage: float, segments_in: Sequence, loads_in: Sequence) -> dict:
+    """计算逐线段线损并按负载归属，返回可 JSON 序列化的结果字典。
+
+    使用未舍入的基线线段电流 I 逐段计算线损 P=I²R，总线损为各段线损之和。
+    按 ``loads`` 输入序号（从 0 开始）逐负载归属：负载 i 在其到 source 路径的
+    每段上承担 该负载电流 × 该段总电流 × 该段电阻，负载的归属线损为路径各段
+    承担量之和；source 节点负载路径为空、归属为零，同节点多条负载分别列出。
+    同一线段上各下游负载的承担量之和恰为该段 I²R，故全部负载归属之和等于
+    总线损；计算与汇总使用未舍入值，展示值按 6 位小数舍入。
+    """
+    tree = _prepare_tree(source_voltage, segments_in, loads_in)
+
+    segment_results = []
+    total_loss = 0.0
+    for seg in tree.segments:  # 保持输入顺序
+        current = tree.seg_current[seg.id]
+        loss = current * current * seg.resistance
+        total_loss += loss
+        segment_results.append(
+            {
+                "segment_id": seg.id,
+                "parent": seg.parent,
+                "child": seg.child,
+                "current": _round(current),
+                "resistance": seg.resistance,
+                "loss": _round(loss),
+            }
+        )
+
+    seg_by_child = {seg.child: seg for seg in tree.segments}
+    load_results = []
+    for index, load in enumerate(loads_in):  # 保持 loads 输入顺序，同节点多条分别列出
+        allocated = 0.0
+        node = load.node
+        while node != ROOT_NODE:  # source 节点负载路径为空，归属为零
+            seg = seg_by_child[node]
+            allocated += load.current * tree.seg_current[seg.id] * seg.resistance
+            node = seg.parent
+        load_results.append(
+            {
+                "index": index,
+                "node": load.node,
+                "current": load.current,
+                "allocated_loss": _round(allocated),
+            }
+        )
+
+    return {
+        "segments": segment_results,
+        "loads": load_results,
+        "total_loss": _round(total_loss),
     }
 
 

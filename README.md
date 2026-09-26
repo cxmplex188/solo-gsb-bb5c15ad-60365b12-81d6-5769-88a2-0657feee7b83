@@ -1,6 +1,6 @@
 # 直流配电树压降校核 API
 
-基于 FastAPI 的直流配电树校核服务：输入以 `source` 为根的配电树（电源电压、线段电阻与额定电流、各节点恒定负载、最低允许电压），自叶向根累计每段承载的全部下游电流，再自根向叶计算压降与节点电压，返回各段电流、各节点电压以及超额定电流 / 欠压位置；并可评估指定节点可追加的最大恒定负载电流（`/capacity`），根据若干线段的实测电流定位唯一未登记正恒定负载的候选节点（`/unregistered-load`），评估至多 K 条负载同时升至峰值时各线段 / 各节点的最坏越限风险（`/peak-risk`），在故障线段断开后评估各候选跨接线的恢复方案并择优（`/outage-restoration`），枚举可切除负载组合、选出以最小切除电流消除全部超额定与欠压的切负荷方案（`/load-shedding`），按各线段保护曲线校核故障下各级保护的动作选择性并标出基线误动风险（`/protection-selectivity`），或为 1～10 条待投运负载搜索每步启动瞬间均不越限的完整可行投运顺序（`/startup-order`）。
+基于 FastAPI 的直流配电树校核服务：输入以 `source` 为根的配电树（电源电压、线段电阻与额定电流、各节点恒定负载、最低允许电压），自叶向根累计每段承载的全部下游电流，再自根向叶计算压降与节点电压，返回各段电流、各节点电压以及超额定电流 / 欠压位置；并可评估指定节点可追加的最大恒定负载电流（`/capacity`），根据若干线段的实测电流定位唯一未登记正恒定负载的候选节点（`/unregistered-load`），评估至多 K 条负载同时升至峰值时各线段 / 各节点的最坏越限风险（`/peak-risk`），在故障线段断开后评估各候选跨接线的恢复方案并择优（`/outage-restoration`），枚举可切除负载组合、选出以最小切除电流消除全部超额定与欠压的切负荷方案（`/load-shedding`），按各线段保护曲线校核故障下各级保护的动作选择性并标出基线误动风险（`/protection-selectivity`），为 1～10 条待投运负载搜索每步启动瞬间均不越限的完整可行投运顺序（`/startup-order`），或按未舍入基线线段电流计算逐线段线损（P=I²R）与总线损并按负载输入序号逐负载归属（`/loss-allocation`）。
 
 ## 快速启动（单条命令）
 
@@ -8,7 +8,7 @@
 docker compose up --build
 ```
 
-容器启动时会自动安装依赖（`pip install -r requirements.txt`）并启动服务。
+容器启动时会自动安装依赖（`pip install -r requirements.txt`）并启动服务。启动后访问 `http://localhost:8000`（交互式文档 `http://localhost:8000/docs`，健康检查 `http://localhost:8000/health`）。
 
 ## 配置
 
@@ -29,6 +29,7 @@ docker compose up --build
 - 切负荷方案评估接口：`POST http://localhost:8000/load-shedding`
 - 保护选择性校核接口：`POST http://localhost:8000/protection-selectivity`
 - 投运顺序评估接口：`POST http://localhost:8000/startup-order`
+- 线损归属评估接口：`POST http://localhost:8000/loss-allocation`
 
 ## 请求格式
 
@@ -686,6 +687,61 @@ curl -X POST http://localhost:8000/startup-order \
 }
 ```
 
+## 线损归属评估：POST /loss-allocation
+
+`POST /loss-allocation`，Content-Type: `application/json`。请求参数与 `/evaluate` 完全相同（`source_voltage` / `min_voltage` 参与校验，不影响线损计算——线损仅取决于各段电流与电阻）。
+
+计算规则：
+
+- 按 `/evaluate` 的基线潮流取得**未舍入**的各段电流 I，逐线段计算线损 **P = I²R**（R 为该段电阻），总线损为各段线损之和；
+- 按 `loads` 输入序号（从 0 开始）**逐负载归属**：负载 i 在其到 `source` 路径的每段上承担 **该负载电流 × 该段总电流 × 该段电阻**，负载的归属线损为路径各段承担量之和；
+- `source` 节点负载的路径为空，归属为零；同节点多条负载仍分别列出；
+- 同一线段上各下游负载的承担量之和恰为该段 I²R，故**全部负载归属之和等于总线损**；计算与汇总使用未舍入值，输出保留六位小数，逐负载归属之和与总线损可能仅差展示舍入差。
+
+### 请求示例
+
+```bash
+curl -X POST http://localhost:8000/loss-allocation \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_voltage": 48.0,
+    "min_voltage": 40.0,
+    "segments": [
+      {"id": "s1", "parent": "source", "child": "a", "resistance": 0.1,  "rated_current": 20.0},
+      {"id": "s2", "parent": "a",      "child": "b", "resistance": 0.2,  "rated_current": 10.0},
+      {"id": "s3", "parent": "a",      "child": "c", "resistance": 0.05, "rated_current": 15.0}
+    ],
+    "loads": [
+      {"node": "a", "current": 2.0},
+      {"node": "b", "current": 5.0},
+      {"node": "c", "current": 8.0}
+    ]
+  }'
+```
+
+### 响应示例（200）
+
+```json
+{
+  "segments": [
+    {"segment_id": "s1", "parent": "source", "child": "a", "current": 15.0, "resistance": 0.1, "loss": 22.5},
+    {"segment_id": "s2", "parent": "a", "child": "b", "current": 5.0, "resistance": 0.2, "loss": 5.0},
+    {"segment_id": "s3", "parent": "a", "child": "c", "current": 8.0, "resistance": 0.05, "loss": 3.2}
+  ],
+  "loads": [
+    {"index": 0, "node": "a", "current": 2.0, "allocated_loss": 3.0},
+    {"index": 1, "node": "b", "current": 5.0, "allocated_loss": 12.5},
+    {"index": 2, "node": "c", "current": 8.0, "allocated_loss": 15.2}
+  ],
+  "total_loss": 30.7
+}
+```
+
+- `segments[].loss`：该段线损 I²R (W)（上例 s1 = 15²×0.1 = 22.5W）；`segments[].current` 为该段未舍入基线电流的展示值。
+- `loads[].allocated_loss`：归属该负载的线损 (W)。上例负载 1（b 点 5A）在 s2 上承担 5×5×0.2 = 5W、在 s1 上承担 5×15×0.1 = 7.5W，合计 12.5W。
+- `total_loss`：总线损 (W) = 各段线损之和 = 各负载归属之和（22.5 + 5.0 + 3.2 = 3.0 + 12.5 + 15.2 = 30.7，展示舍入差除外）。
+- 线段 id 重复、树不连通、负载节点不存在等错误响应与 `/evaluate` 相同（`400 invalid_input` / `422 validation_error`）。
+
 ## 错误说明
 
 所有错误均返回统一结构：
@@ -721,7 +777,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 app/
   main.py    # FastAPI 应用与错误处理
-  core.py    # 树校验 + 电流累计 + 压降计算 + 增容评估 + 未登记负载定位 + 峰值风险评估 + 故障恢复评估 + 切负荷方案 + 保护选择性校核 + 投运顺序搜索
+  core.py    # 树校验 + 电流累计 + 压降计算 + 增容评估 + 未登记负载定位 + 峰值风险评估 + 故障恢复评估 + 切负荷方案 + 保护选择性校核 + 投运顺序搜索 + 线损归属
   models.py  # 请求 / 响应模型
 tests/
   test_evaluate.py
@@ -732,6 +788,7 @@ tests/
   test_load_shedding.py
   test_protection_selectivity.py
   test_startup_order.py
+  test_loss_allocation.py
 Dockerfile
 docker-compose.yml
 requirements.txt
