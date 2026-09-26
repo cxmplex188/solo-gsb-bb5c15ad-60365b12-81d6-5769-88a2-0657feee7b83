@@ -470,3 +470,44 @@ class StartupOrderResponse(BaseModel):
         default=None,
         description="按 order 逐步给出的启动瞬间校核摘要；infeasible 时为 null",
     )
+
+
+class LossAllocationRequest(EvaluateRequest):
+    """线损归属评估请求：与 /evaluate 参数完全相同（min_voltage 参与校验但不影响线损计算）。"""
+
+
+class LossSegmentResult(BaseModel):
+    segment_id: str
+    parent: str
+    child: str
+    current: float = Field(description="线段承载的全部下游电流 (A)，展示值按 6 位小数舍入")
+    resistance: float = Field(description="线段电阻 (Ω)")
+    loss: float = Field(description="线段线损 P=I²R (W)，展示值按 6 位小数舍入")
+
+
+class LoadSegmentShare(BaseModel):
+    segment_id: str = Field(description="负载到 source 路径上的线段标识")
+    loss: float = Field(
+        description="该负载在该段承担的线损 = 负载电流 × 该段总电流 × 该段电阻 (W)，"
+        "展示值按 6 位小数舍入"
+    )
+
+
+class LoadLossResult(BaseModel):
+    index: int = Field(description="负载输入序号（loads 数组下标，从 0 开始）")
+    node: str = Field(description="负载所在节点")
+    current: float = Field(description="负载电流 (A)")
+    loss: float = Field(description="该负载承担的线损总和 (W)，展示值按 6 位小数舍入")
+    segments: list[LoadSegmentShare] = Field(
+        description="该负载在到 source 路径各段上的线损归属（自负载节点向 source 排序）；"
+        "source 节点负载为空列表"
+    )
+
+
+class LossAllocationResponse(BaseModel):
+    total_loss: float = Field(description="全树总线损 (W)：各段线损之和，展示值按 6 位小数舍入")
+    segments: list[LossSegmentResult] = Field(description="逐线段线损（按线段输入顺序）")
+    loads: list[LoadLossResult] = Field(
+        description="逐负载线损归属（按 loads 输入序号）；同节点多条负载分别列出，"
+        "逐负载归属之和与总线损一致（展示舍入差除外）"
+    )

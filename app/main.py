@@ -12,6 +12,7 @@ from .core import (
     capacity,
     evaluate,
     load_shedding,
+    loss_allocation,
     outage_restoration,
     peak_risk,
     protection_selectivity,
@@ -25,6 +26,8 @@ from .models import (
     EvaluateResponse,
     LoadSheddingRequest,
     LoadSheddingResponse,
+    LossAllocationRequest,
+    LossAllocationResponse,
     OutageRestorationRequest,
     OutageRestorationResponse,
     PeakRiskRequest,
@@ -48,9 +51,10 @@ app = FastAPI(
         "在故障线段断开后评估各候选跨接线的恢复方案并按最低节点电压余量择优，"
         "枚举可切除负载组合，选出以最小切除电流消除全部越限的切负荷方案，"
         "按各线段保护曲线校核故障下各级保护的动作选择性并标出基线误动风险，"
-        "或为待投运负载搜索每步启动瞬间均不越限的完整可行投运顺序。"
+        "为待投运负载搜索每步启动瞬间均不越限的完整可行投运顺序，"
+        "或按未舍入基线线段电流计算逐段线损（P=I²R）并按负载输入序号逐条归属。"
     ),
-    version="1.7.0",
+    version="1.8.0",
 )
 
 
@@ -346,11 +350,22 @@ def startup_order_endpoint(payload: StartupOrderRequest) -> dict:
     )
 
 
+@app.post(
+    "/loss-allocation",
+    response_model=LossAllocationResponse,
+    summary="按未舍入基线电流计算逐段线损（P=I²R）并按负载逐条归属",
+)
+def loss_allocation_endpoint(payload: LossAllocationRequest) -> dict:
+    return loss_allocation(
+        source_voltage=payload.source_voltage,
+        segments_in=payload.segments,
+        loads_in=payload.loads,
+    )
+
+
 @app.get("/health", summary="健康检查")
 def health() -> dict:
     return {"status": "ok"}
-
-
 @app.get("/", summary="服务信息")
 def index() -> dict:
     return {
@@ -363,6 +378,7 @@ def index() -> dict:
         "load_shedding": "POST /load-shedding",
         "protection_selectivity": "POST /protection-selectivity",
         "startup_order": "POST /startup-order",
+        "loss_allocation": "POST /loss-allocation",
         "docs": "/docs",
         "health": "/health",
     }
